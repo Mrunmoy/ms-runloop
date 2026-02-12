@@ -1,6 +1,6 @@
 # Implementation Progress
 
-## Status: Phase 1 — RunLoop + RingBuffer (Complete)
+## Status: Phase 2 — Service Layer (Complete)
 
 Last updated: 2026-02-12
 
@@ -21,13 +21,13 @@ Last updated: 2026-02-12
 - [x] RunLoop implementation (epoll-based, pipe wakeup)
 - [x] 9 unit tests (init, run/stop, stop-before-run, stop-from-callable, destructor, runOnThread, multi-thread posts, post order, restart)
 
-### Phase 2: Service Layer (Next)
-- [ ] Platform abstraction layer (shared memory, sockets, epoll fd management)
-- [ ] Service class — server-side (listen, accept, connection management)
-- [ ] Client class — client-side (connect, handshake, shared memory setup)
-- [ ] call() and notify() on Service/Client
-- [ ] Frame encoding/decoding (24-byte header)
-- [ ] Connection tests, RPC tests, notification tests
+### Phase 2: Service Layer (Done)
+- [x] Platform abstraction layer (shared memory, sockets, epoll fd management)
+- [x] Service class — server-side (listen, accept, connection management)
+- [x] Client class — client-side (connect, handshake, shared memory setup)
+- [x] call() and notify() on Service/Client
+- [x] Frame encoding/decoding (24-byte header)
+- [x] Connection tests, RPC tests, notification tests
 
 ### Phase 3: IDL Parser + Code Generator (Python)
 - [ ] IDL lexer/tokenizer
