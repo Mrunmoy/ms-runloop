@@ -1,67 +1,51 @@
 # Implementation Progress
 
-## Status: Pre-implementation (Design Complete)
+## Status: Phase 1 — RunLoop + RingBuffer (Complete)
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 ------------------------------------------------------------------------
 
 ## Implementation Phases
 
-### Phase 1a: Project Setup
-- [ ] CMake project structure (src/, tests/, include/)
-- [ ] Google Test integration via FetchContent
-- [ ] Basic build + empty test target compiles
+### Phase 1a: Project Setup — DONE
+- [x] CMake project structure (src/, tests/, include/)
+- [x] Google Test integration via FetchContent
+- [x] Basic build + empty test target compiles
 
-### Phase 1b: Ring Buffer
-- [ ] Ring buffer implementation (lock-free, SPSC)
-- [ ] Ring buffer unit tests (tests 1-5 from spec section 11.2)
+### Phase 1b: Ring Buffer — DONE
+- [x] Ring buffer implementation (lock-free, SPSC, header-only template)
+- [x] 8 unit tests (single write/read, sequential, wraparound, full, empty, peek, skip, capacity)
 
-### Phase 1c: UDS + Shared Memory Connection
-- [ ] Platform abstraction layer (shared memory, sockets, event loop)
-- [ ] Service::Create() — server-side endpoint creation (bind, listen)
-- [ ] Client connect() — blocking connection with retry + backoff
-- [ ] Shared memory setup and FD exchange handshake
-- [ ] Connection unit tests (tests 6-10 from spec section 11.2)
+### Phase 1c: RunLoop — DONE
+- [x] RunLoop implementation (epoll-based, pipe wakeup)
+- [x] 9 unit tests (init, run/stop, stop-before-run, stop-from-callable, destructor, runOnThread, multi-thread posts, post order, restart)
 
-### Phase 1d: Frame Encoding + Dispatch Loop
+### Phase 2: Service Layer (Next)
+- [ ] Platform abstraction layer (shared memory, sockets, epoll fd management)
+- [ ] Service class — server-side (listen, accept, connection management)
+- [ ] Client class — client-side (connect, handshake, shared memory setup)
+- [ ] call() and notify() on Service/Client
 - [ ] Frame encoding/decoding (24-byte header)
-- [ ] Dispatch loop (epoll-based, multiplexing multiple clients)
-- [ ] `call()` — synchronous RPC with seq correlation + condvar
-- [ ] RPC unit tests (tests 11-15 from spec section 11.2)
+- [ ] Connection tests, RPC tests, notification tests
 
-### Phase 1e: Notifications
-- [ ] `notify()` — async notification broadcast to connected peers
-- [ ] Notification unit tests (tests 16-19 from spec section 11.2)
-
-### Phase 1f: Lifecycle + Error Handling
-- [ ] `stop()` with deterministic cleanup
-- [ ] Multi-client connection management
-- [ ] Lifecycle unit tests (tests 20-23 from spec section 11.2)
-- [ ] Crash/error handling tests (tests 24-26 from spec section 11.2)
-
-### Phase 2: IDL Parser + Code Generator (Python)
+### Phase 3: IDL Parser + Code Generator (Python)
 - [ ] IDL lexer/tokenizer
 - [ ] IDL parser (based on EBNF grammar in spec)
 - [ ] AST representation
-- [ ] C++ code emitter — client stubs
-- [ ] C++ code emitter — server skeletons
-- [ ] C++ code emitter — marshalling/unmarshalling functions
-- [ ] C++ code emitter — notification senders
-- [ ] C++ code emitter — dispatch tables (handleMessage switch/case)
+- [ ] C++ code emitter — client stubs, server skeletons, marshalling
 - [ ] Sample IDL file for testing
 
-### Phase 3: Integration Tests
+### Phase 4: Integration Tests
 - [ ] End-to-end with generated StorageService stubs
 - [ ] Multi-client notification delivery with generated code
 - [ ] All IDL data types (scalars, enums, structs, arrays, strings)
 
-### Phase 4: Python Bindings (Future)
-- [ ] pybind11 wrapper for EventDispatcher
-- [ ] Python client stub generation
-- [ ] Python server skeleton generation
+### Phase 5: Python Bindings (Future)
+- [ ] pybind11 wrapper for RunLoop
+- [ ] Python client/server stub generation
 
-### Phase 5: macOS Support (Future)
+### Phase 6: macOS Support (Future)
 - [ ] `shm_open` backend for shared memory
 - [ ] `SOCK_STREAM` backend for UDS
 - [ ] `kqueue` backend for event loop
@@ -106,26 +90,26 @@ string/template handling for code generation.
 
 ## Decisions Log
 
-1. **EventDispatcher is a pure event loop** — no init(), no endpoint name.
-   Connection setup is done by generated Service::Create() (server) and
-   client.connect() (client). Dispatcher just runs run()/stop().
-2. **Generated class hierarchy** — Server: user subclasses FooSkeleton with
+1. **RunLoop is a pure event loop** — init(name), run(), stop(),
+   runOnThread(fn). No RPC, transport, or service knowledge.
+   Renamed from EventDispatcher (name was taken).
+2. **call() and notify() belong to Service class** — not RunLoop.
+3. **Generated class hierarchy** — Server: user subclasses FooSkeleton with
    virtual handleXxx() methods. Client: generated FooClient with RPC call
    methods + virtual onXxx() notification callbacks.
-3. **Sample IDL added** — StorageService example in Requirements.md section 6.4.
-4. **Connection handshake** — Client creates memfd, sends FD + version over UDS.
+4. **Sample IDL added** — StorageService example in Requirements.md section 6.4.
+5. **Connection handshake** — Client creates memfd, sends FD + version over UDS.
    Server validates, mmaps, ACKs. Linux abstract namespace for socket path.
    macOS differences bookmarked with MACOS_BOOKMARK comments in spec.
-5. **Ring buffer size** — 256KB per direction, power of 2, compile-time constant.
-6. **Error codes** — Negative = framework, 0 = success, positive = user-defined.
-7. **Notification flow** — Generated skeleton has non-virtual notify*() methods.
+6. **Ring buffer size** — 256KB per direction, power of 2, compile-time constant.
+7. **Error codes** — Negative = framework, 0 = success, positive = user-defined.
+8. **Notification flow** — Generated skeleton has non-virtual notify*() methods.
    Server app calls them, skeleton marshals and broadcasts to all clients.
-8. **IDL types** — Language-agnostic built-in names (uint32, string, etc.).
+9. **IDL types** — Language-agnostic built-in names (uint32, string, etc.).
    Code generator maps to target language. Typedefs supported.
-9. **Code generator** — Python.
-10. **Build system** — CMake 3.14+, C++17, Google Test via FetchContent.
-11. **Test-first approach** — EventDispatcher runtime implemented and fully
-    tested (26 unit tests) before IDL parser / code generator work begins.
+10. **Code generator** — Python.
+11. **Build system** — CMake 3.14+, C++17, Google Test via FetchContent.
+12. **C++ coding standards** — Member variables use `m_` prefix.
 
 ------------------------------------------------------------------------
 
