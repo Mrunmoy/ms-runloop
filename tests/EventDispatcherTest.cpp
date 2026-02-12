@@ -3,42 +3,10 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstring>
-#include <fcntl.h>
-#include <sys/epoll.h>
 #include <thread>
-#include <unistd.h>
 
 using namespace rpc;
 using namespace std::chrono_literals;
-
-// Helper: RAII pipe pair.
-struct Pipe {
-    int readEnd  = -1;
-    int writeEnd = -1;
-
-    Pipe() {
-        int fds[2];
-        if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) == 0) {
-            readEnd  = fds[0];
-            writeEnd = fds[1];
-        }
-    }
-
-    ~Pipe() {
-        if (readEnd >= 0)  close(readEnd);
-        if (writeEnd >= 0) close(writeEnd);
-    }
-
-    Pipe(const Pipe&) = delete;
-    Pipe& operator=(const Pipe&) = delete;
-
-    void send(const void* data, size_t len) {
-        [[maybe_unused]] auto r = write(writeEnd, data, len);
-    }
-
-    void send(uint8_t byte) { send(&byte, 1); }
-};
 
 // Helper: run dispatcher in background, auto-stop on scope exit.
 struct DispatcherGuard {
@@ -55,11 +23,22 @@ struct DispatcherGuard {
 };
 
 // ═════════════════════════════════════════════════════════════════════
-// Lifecycle: run() blocks, stop() causes it to return.
+// init() sets the name.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(LifecycleTest, RunStop) {
+TEST(EventDispatcherTest, InitSetsName) {
     EventDispatcher dispatcher;
+    dispatcher.init("TestDispatcher");
+    EXPECT_STREQ(dispatcher.name(), "TestDispatcher");
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// run() blocks, stop() causes it to return.
+// ═════════════════════════════════════════════════════════════════════
+
+TEST(EventDispatcherTest, RunStop) {
+    EventDispatcher dispatcher;
+    dispatcher.init("RunStop");
 
     std::atomic<bool> running{false};
     std::thread t([&] {
@@ -68,7 +47,6 @@ TEST(LifecycleTest, RunStop) {
         running.store(false);
     });
 
-    // Wait for run() to start
     for (int i = 0; i < 100 && !running.load(); ++i) {
         std::this_thread::sleep_for(5ms);
     }
@@ -83,14 +61,14 @@ TEST(LifecycleTest, RunStop) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// Lifecycle: stop() before run() — run() should return immediately.
+// stop() before run() — run() should return immediately.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(LifecycleTest, StopBeforeRun) {
+TEST(EventDispatcherTest, StopBeforeRun) {
     EventDispatcher dispatcher;
+    dispatcher.init("StopBefore");
     dispatcher.stop();
 
-    // run() should return quickly since stop was already requested
     std::atomic<bool> done{false};
     std::thread t([&] {
         dispatcher.run();
@@ -105,27 +83,25 @@ TEST(LifecycleTest, StopBeforeRun) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// Lifecycle: stop() from within a callback.
+// stop() from within a posted callable.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(LifecycleTest, StopFromCallback) {
+TEST(EventDispatcherTest, StopFromCallable) {
     EventDispatcher dispatcher;
-    Pipe pipe;
+    dispatcher.init("StopCallable");
 
-    dispatcher.addFd(pipe.readEnd, [&](int, uint32_t) {
+    std::atomic<bool> done{false};
+    std::thread t([&] {
+        dispatcher.run();
+        done.store(true);
+    });
+
+    std::this_thread::sleep_for(10ms);
+
+    dispatcher.runOnDispatchThread([&] {
         dispatcher.stop();
     });
 
-    std::atomic<bool> done{false};
-    std::thread t([&] {
-        dispatcher.run();
-        done.store(true);
-    });
-
-    // Wait for run to start, then trigger the callback
-    std::this_thread::sleep_for(10ms);
-    pipe.send(0x42);
-
     for (int i = 0; i < 100 && !done.load(); ++i) {
         std::this_thread::sleep_for(5ms);
     }
@@ -134,242 +110,35 @@ TEST(LifecycleTest, StopFromCallback) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// Lifecycle: destructor stops a running dispatcher.
+// Destructor stops a running dispatcher.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(LifecycleTest, DestructorStops) {
+TEST(EventDispatcherTest, DestructorStops) {
     std::atomic<bool> done{false};
-
     {
         EventDispatcher dispatcher;
+        dispatcher.init("DtorStop");
         std::thread t([&] {
             dispatcher.run();
             done.store(true);
         });
         std::this_thread::sleep_for(10ms);
-        // destructor will call stop()
         dispatcher.stop();
         t.join();
     }
-
     EXPECT_TRUE(done.load());
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// FD callback: single fd fires when data arrives.
+// runOnDispatchThread() executes callable on the dispatch thread.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(FdCallbackTest, SingleFdReadable) {
+TEST(EventDispatcherTest, RunOnDispatchThread) {
     EventDispatcher dispatcher;
-    Pipe pipe;
-
-    std::atomic<bool> called{false};
-    uint8_t received = 0;
-
-    dispatcher.addFd(pipe.readEnd, [&](int fd, uint32_t events) {
-        if (events & EPOLLIN) {
-            read(fd, &received, 1);
-            called.store(true);
-        }
-    });
-
-    DispatcherGuard guard(dispatcher);
-    std::this_thread::sleep_for(10ms);
-
-    pipe.send(0xAA);
-
-    for (int i = 0; i < 100 && !called.load(); ++i) {
-        std::this_thread::sleep_for(5ms);
-    }
-
-    EXPECT_TRUE(called.load());
-    EXPECT_EQ(received, 0xAA);
-}
-
-// ═════════════════════════════════════════════════════════════════════
-// FD callback: multiple fds multiplexed correctly.
-// ═════════════════════════════════════════════════════════════════════
-
-TEST(FdCallbackTest, MultipleFds) {
-    EventDispatcher dispatcher;
-    Pipe pipe1, pipe2, pipe3;
-
-    std::atomic<int> count1{0}, count2{0}, count3{0};
-
-    dispatcher.addFd(pipe1.readEnd, [&](int fd, uint32_t) {
-        char buf; read(fd, &buf, 1);
-        count1.fetch_add(1);
-    });
-    dispatcher.addFd(pipe2.readEnd, [&](int fd, uint32_t) {
-        char buf; read(fd, &buf, 1);
-        count2.fetch_add(1);
-    });
-    dispatcher.addFd(pipe3.readEnd, [&](int fd, uint32_t) {
-        char buf; read(fd, &buf, 1);
-        count3.fetch_add(1);
-    });
-
-    DispatcherGuard guard(dispatcher);
-    std::this_thread::sleep_for(10ms);
-
-    pipe1.send(0x01);
-    pipe3.send(0x03);
-    pipe2.send(0x02);
-    pipe1.send(0x01);
-
-    for (int i = 0; i < 100 && (count1.load() < 2 || count2.load() < 1 || count3.load() < 1); ++i) {
-        std::this_thread::sleep_for(5ms);
-    }
-
-    EXPECT_EQ(count1.load(), 2);
-    EXPECT_EQ(count2.load(), 1);
-    EXPECT_EQ(count3.load(), 1);
-}
-
-// ═════════════════════════════════════════════════════════════════════
-// FD callback: rapid events on single fd, all delivered in order.
-// ═════════════════════════════════════════════════════════════════════
-
-TEST(FdCallbackTest, RapidEvents) {
-    EventDispatcher dispatcher;
-    Pipe pipe;
-
-    std::vector<uint8_t> received;
-    std::mutex mu;
-    std::atomic<int> count{0};
-
-    dispatcher.addFd(pipe.readEnd, [&](int fd, uint32_t) {
-        uint8_t buf[256];
-        ssize_t n = read(fd, buf, sizeof(buf));
-        if (n > 0) {
-            std::lock_guard<std::mutex> lock(mu);
-            received.insert(received.end(), buf, buf + n);
-            count.fetch_add(static_cast<int>(n));
-        }
-    });
-
-    DispatcherGuard guard(dispatcher);
-    std::this_thread::sleep_for(10ms);
-
-    constexpr int N = 100;
-    for (int i = 0; i < N; ++i) {
-        pipe.send(static_cast<uint8_t>(i));
-    }
-
-    for (int i = 0; i < 200 && count.load() < N; ++i) {
-        std::this_thread::sleep_for(5ms);
-    }
-
-    EXPECT_EQ(count.load(), N);
-    std::lock_guard<std::mutex> lock(mu);
-    for (int i = 0; i < N; ++i) {
-        EXPECT_EQ(received[i], static_cast<uint8_t>(i));
-    }
-}
-
-// ═════════════════════════════════════════════════════════════════════
-// FD callback: hangup detected when write end is closed.
-// ═════════════════════════════════════════════════════════════════════
-
-TEST(FdCallbackTest, HangupDetection) {
-    EventDispatcher dispatcher;
-    Pipe pipe;
-
-    std::atomic<bool> gotHangup{false};
-
-    dispatcher.addFd(pipe.readEnd, [&](int, uint32_t events) {
-        if (events & EPOLLHUP) {
-            gotHangup.store(true);
-        }
-    });
-
-    DispatcherGuard guard(dispatcher);
-    std::this_thread::sleep_for(10ms);
-
-    // Close the write end — should trigger EPOLLHUP on the read end
-    close(pipe.writeEnd);
-    pipe.writeEnd = -1;
-
-    for (int i = 0; i < 100 && !gotHangup.load(); ++i) {
-        std::this_thread::sleep_for(5ms);
-    }
-
-    EXPECT_TRUE(gotHangup.load());
-}
-
-// ═════════════════════════════════════════════════════════════════════
-// removeFd: unregistered fd no longer triggers callback.
-// ═════════════════════════════════════════════════════════════════════
-
-TEST(FdCallbackTest, RemoveFd) {
-    EventDispatcher dispatcher;
-    Pipe pipe;
-
-    std::atomic<int> count{0};
-
-    dispatcher.addFd(pipe.readEnd, [&](int fd, uint32_t) {
-        char buf; read(fd, &buf, 1);
-        count.fetch_add(1);
-    });
-
-    DispatcherGuard guard(dispatcher);
-    std::this_thread::sleep_for(10ms);
-
-    pipe.send(0x01);
-    for (int i = 0; i < 50 && count.load() < 1; ++i) {
-        std::this_thread::sleep_for(5ms);
-    }
-    EXPECT_EQ(count.load(), 1);
-
-    // Remove the fd
-    dispatcher.removeFd(pipe.readEnd);
-    std::this_thread::sleep_for(10ms);
-
-    // This should NOT trigger the callback
-    pipe.send(0x02);
-    std::this_thread::sleep_for(50ms);
-    EXPECT_EQ(count.load(), 1);
-}
-
-// ═════════════════════════════════════════════════════════════════════
-// removeFd from within callback — safe to do.
-// ═════════════════════════════════════════════════════════════════════
-
-TEST(FdCallbackTest, RemoveFdFromCallback) {
-    EventDispatcher dispatcher;
-    Pipe pipe;
-
-    std::atomic<int> count{0};
-
-    dispatcher.addFd(pipe.readEnd, [&](int fd, uint32_t) {
-        char buf; read(fd, &buf, 1);
-        count.fetch_add(1);
-        dispatcher.removeFd(fd);
-    });
-
-    DispatcherGuard guard(dispatcher);
-    std::this_thread::sleep_for(10ms);
-
-    pipe.send(0x01);
-    for (int i = 0; i < 50 && count.load() < 1; ++i) {
-        std::this_thread::sleep_for(5ms);
-    }
-
-    // Second write should not trigger callback
-    pipe.send(0x02);
-    std::this_thread::sleep_for(50ms);
-    EXPECT_EQ(count.load(), 1);
-}
-
-// ═════════════════════════════════════════════════════════════════════
-// post(): callable executes on the dispatch thread.
-// ═════════════════════════════════════════════════════════════════════
-
-TEST(PostTest, PostExecutesOnDispatchThread) {
-    EventDispatcher dispatcher;
+    dispatcher.init("PostThread");
 
     std::thread::id dispatchThreadId;
-    std::thread::id postThreadId;
+    std::thread::id postedThreadId;
     std::atomic<bool> done{false};
 
     std::thread t([&] {
@@ -379,8 +148,8 @@ TEST(PostTest, PostExecutesOnDispatchThread) {
 
     std::this_thread::sleep_for(10ms);
 
-    dispatcher.post([&] {
-        postThreadId = std::this_thread::get_id();
+    dispatcher.runOnDispatchThread([&] {
+        postedThreadId = std::this_thread::get_id();
         done.store(true);
         dispatcher.stop();
     });
@@ -388,15 +157,16 @@ TEST(PostTest, PostExecutesOnDispatchThread) {
     t.join();
 
     EXPECT_TRUE(done.load());
-    EXPECT_EQ(postThreadId, dispatchThreadId);
+    EXPECT_EQ(postedThreadId, dispatchThreadId);
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// post(): multiple posts from different threads.
+// Multiple posts from different threads all execute.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(PostTest, MultiplePostsFromThreads) {
+TEST(EventDispatcherTest, MultiplePostsFromThreads) {
     EventDispatcher dispatcher;
+    dispatcher.init("MultiPost");
 
     std::atomic<int> count{0};
     constexpr int NUM_THREADS = 4;
@@ -409,14 +179,15 @@ TEST(PostTest, MultiplePostsFromThreads) {
     for (int t = 0; t < NUM_THREADS; ++t) {
         threads.emplace_back([&] {
             for (int i = 0; i < POSTS_PER_THREAD; ++i) {
-                dispatcher.post([&] { count.fetch_add(1); });
+                dispatcher.runOnDispatchThread([&] {
+                    count.fetch_add(1);
+                });
             }
         });
     }
 
     for (auto& th : threads) th.join();
 
-    // Wait for all posts to execute
     for (int i = 0; i < 200 && count.load() < NUM_THREADS * POSTS_PER_THREAD; ++i) {
         std::this_thread::sleep_for(5ms);
     }
@@ -425,19 +196,67 @@ TEST(PostTest, MultiplePostsFromThreads) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// addFd returns -1 for invalid fd.
+// Posted callables execute in order.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(ErrorTest, AddInvalidFd) {
+TEST(EventDispatcherTest, PostOrder) {
     EventDispatcher dispatcher;
-    EXPECT_EQ(dispatcher.addFd(-1, [](int, uint32_t) {}), -1);
+    dispatcher.init("PostOrder");
+
+    std::vector<int> order;
+    std::mutex mu;
+    std::atomic<int> count{0};
+
+    DispatcherGuard guard(dispatcher);
+    std::this_thread::sleep_for(10ms);
+
+    constexpr int N = 50;
+    for (int i = 0; i < N; ++i) {
+        dispatcher.runOnDispatchThread([&, i] {
+            std::lock_guard<std::mutex> lock(mu);
+            order.push_back(i);
+            count.fetch_add(1);
+        });
+    }
+
+    for (int i = 0; i < 200 && count.load() < N; ++i) {
+        std::this_thread::sleep_for(5ms);
+    }
+
+    EXPECT_EQ(count.load(), N);
+    std::lock_guard<std::mutex> lock(mu);
+    for (int i = 0; i < N; ++i) {
+        EXPECT_EQ(order[i], i);
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// removeFd returns -1 for unregistered fd.
+// run() can be called again after stop().
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(ErrorTest, RemoveUnregisteredFd) {
+TEST(EventDispatcherTest, RestartAfterStop) {
     EventDispatcher dispatcher;
-    EXPECT_EQ(dispatcher.removeFd(999), -1);
+    dispatcher.init("Restart");
+
+    // First run/stop cycle
+    {
+        DispatcherGuard guard(dispatcher);
+        std::this_thread::sleep_for(10ms);
+    }
+
+    // Second run/stop cycle
+    std::atomic<bool> executed{false};
+    {
+        std::thread t([&] { dispatcher.run(); });
+        std::this_thread::sleep_for(10ms);
+
+        dispatcher.runOnDispatchThread([&] {
+            executed.store(true);
+            dispatcher.stop();
+        });
+
+        t.join();
+    }
+
+    EXPECT_TRUE(executed.load());
 }

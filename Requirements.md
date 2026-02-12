@@ -128,12 +128,17 @@ Rationale:
 
 The EventDispatcher SHALL:
 
-1.  Provide request/response RPC transport.
-2.  Provide asynchronous notification delivery.
-3.  Support shared-memory fast-path for buffer parameters.
-4.  Correlate requests and responses using sequence identifiers.
-5.  Operate on a dedicated dispatch thread.
-6.  Provide deterministic stop semantics.
+1.  Provide a generic event loop on a dedicated dispatch thread.
+2.  Allow other components to post work to the dispatch thread.
+3.  Provide deterministic stop semantics.
+
+The EventDispatcher does NOT:
+
+-   Know about RPC, notifications, services, or frame formats.
+-   Manage connections, sockets, or shared memory.
+-   Directly expose `addFd`/`removeFd` — fd management is an
+    internal implementation detail used by higher-level classes
+    (e.g., Service, Client) that operate on the dispatcher.
 
 ------------------------------------------------------------------------
 
@@ -143,33 +148,28 @@ The EventDispatcher SHALL:
 class EventDispatcher
 {
 public:
+    void init(const char* name);
     void run();
     void stop();
-
-    // Used internally by generated service/client code
-    int call(uint32_t serviceId,
-             uint32_t methodId,
-             const std::vector<uint8_t>& request,
-             std::vector<uint8_t>& response);
-
-    void notify(uint32_t serviceId,
-                uint32_t notifyId,
-                const std::vector<uint8_t>& payload);
+    void runOnDispatchThread(std::function<void()> fn);
 };
 ```
 
 ### Behavioral Requirements
 
--   `run()` SHALL block the calling thread, dispatching incoming
-    frames until `stop()` is invoked.
+-   `init(name)` SHALL initialize the event loop (create the epoll
+    instance and internal wakeup mechanism). `name` identifies the
+    dispatcher for debugging/logging purposes.
+-   `run()` SHALL block the calling thread, dispatching events
+    until `stop()` is invoked.
 -   `stop()` SHALL:
     -   Terminate the run loop
-    -   Close all transports
-    -   Complete all pending calls with error
--   `call()` SHALL be thread-safe. Multiple threads MAY call
-    `call()` concurrently while `run()` is active on another thread.
--   `call()` and `notify()` are used internally by the generated
-    client stubs. Application code does not call them directly.
+    -   Be thread-safe — callable from any thread or from within
+        a posted callable
+-   `runOnDispatchThread(fn)` SHALL:
+    -   Accept a callable and execute it on the dispatch thread
+    -   Be thread-safe — callable from any thread
+    -   Wake the dispatch loop so the callable is processed promptly
 
 ### Error Codes
 
