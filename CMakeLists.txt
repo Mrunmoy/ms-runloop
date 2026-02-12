@@ -10,10 +10,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_library(rpc
     src/RingBuffer.cpp
     src/EventDispatcher.cpp
-    src/Platform.cpp
 )
 target_include_directories(rpc PUBLIC include)
-target_link_libraries(rpc PRIVATE pthread rt)
+target_link_libraries(rpc PRIVATE pthread)
 
 # ── Google Test ──────────────────────────────────────────────────────
 include(FetchContent)
@@ -30,6 +29,7 @@ enable_testing()
 # ── Tests ────────────────────────────────────────────────────────────
 add_executable(rpc_tests
     tests/RingBufferTest.cpp
+    tests/EventDispatcherTest.cpp
 )
 target_link_libraries(rpc_tests PRIVATE rpc GTest::gtest_main)
 include(GoogleTest)
