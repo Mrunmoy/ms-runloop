@@ -1,4 +1,4 @@
-#include "rpc/EventDispatcher.h"
+#include "rpc/RunLoop.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -6,9 +6,9 @@
 
 namespace rpc {
 
-EventDispatcher::EventDispatcher() = default;
+RunLoop::RunLoop() = default;
 
-EventDispatcher::~EventDispatcher() {
+RunLoop::~RunLoop() {
     if (m_running.load()) {
         stop();
     }
@@ -22,7 +22,7 @@ EventDispatcher::~EventDispatcher() {
     }
 }
 
-void EventDispatcher::init(const char* name) {
+void RunLoop::init(const char* name) {
     m_name = name;
     m_epollFd = epoll_create1(EPOLL_CLOEXEC);
 
@@ -34,7 +34,7 @@ void EventDispatcher::init(const char* name) {
     }
 }
 
-void EventDispatcher::run() {
+void RunLoop::run() {
     m_running.store(true, std::memory_order_release);
 
     constexpr int MAX_EVENTS = 32;
@@ -57,7 +57,6 @@ void EventDispatcher::run() {
 
         for (int i = 0; i < n; ++i) {
             if (events[i].data.fd == m_wakeupFd[0]) {
-                // Drain the wakeup pipe
                 char buf[64];
                 while (read(m_wakeupFd[0], buf, sizeof(buf)) > 0) {}
             }
@@ -68,12 +67,12 @@ void EventDispatcher::run() {
     m_stopRequested.store(false, std::memory_order_release);
 }
 
-void EventDispatcher::stop() {
+void RunLoop::stop() {
     m_stopRequested.store(true, std::memory_order_release);
     wakeup();
 }
 
-void EventDispatcher::runOnDispatchThread(std::function<void()> fn) {
+void RunLoop::runOnThread(std::function<void()> fn) {
     {
         std::lock_guard<std::mutex> lock(m_postMutex);
         m_postQueue.push_back(std::move(fn));
@@ -81,7 +80,7 @@ void EventDispatcher::runOnDispatchThread(std::function<void()> fn) {
     wakeup();
 }
 
-void EventDispatcher::wakeup() {
+void RunLoop::wakeup() {
     char byte = 1;
     [[maybe_unused]] auto r = write(m_wakeupFd[1], &byte, 1);
 }

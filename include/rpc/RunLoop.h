@@ -7,24 +7,24 @@
 
 namespace rpc {
 
-// Pure event loop. Runs on a dedicated dispatch thread, allows other
+// Pure event loop. Runs on a dedicated thread, allows other
 // components to post work to that thread. No transport knowledge.
 //
 // Usage:
-//   EventDispatcher dispatcher;
-//   dispatcher.init("MyApp");
-//   dispatcher.runOnDispatchThread([&] { /* runs on dispatch thread */ });
-//   dispatcher.run();  // blocks until stop()
+//   RunLoop loop;
+//   loop.init("MyApp");
+//   loop.runOnThread([&] { /* runs on loop thread */ });
+//   loop.run();  // blocks until stop()
 
-class EventDispatcher {
+class RunLoop {
 public:
-    EventDispatcher();
-    ~EventDispatcher();
+    RunLoop();
+    ~RunLoop();
 
-    EventDispatcher(const EventDispatcher&) = delete;
-    EventDispatcher& operator=(const EventDispatcher&) = delete;
+    RunLoop(const RunLoop&) = delete;
+    RunLoop& operator=(const RunLoop&) = delete;
 
-    // Initialize the event loop. `name` identifies this dispatcher
+    // Initialize the run loop. `name` identifies this loop
     // for debugging/logging purposes.
     void init(const char* name);
 
@@ -35,9 +35,9 @@ public:
     // or from within a posted callable.
     void stop();
 
-    // Post a callable to be executed on the dispatch thread.
+    // Post a callable to be executed on the run loop thread.
     // Thread-safe — can be called from any thread.
-    void runOnDispatchThread(std::function<void()> fn);
+    void runOnThread(std::function<void()> fn);
 
     bool isRunning() const { return m_running.load(std::memory_order_acquire); }
     const char* name() const { return m_name; }

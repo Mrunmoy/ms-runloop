@@ -19,7 +19,7 @@ interpreted as described in RFC 2119.
 
 The framework consists of two subsystems:
 
-1.  **EventDispatcher Runtime Library**
+1.  **RunLoop Runtime Library**
 2.  **Service Toolchain (IDL + Code Generation)**
 
 The runtime provides IPC transport, dispatching, shared memory support,
@@ -89,18 +89,17 @@ Rationale:
 -   Clean separation: UDS is the control plane, shared memory is
     the data plane.
 
-### 3.5 EventDispatcher as Pure Event Loop
+### 3.5 RunLoop as Pure Event Loop
 
--   The EventDispatcher SHALL be a **pure event loop**. It does not
-    own endpoint names or manage connection establishment.
+-   The RunLoop SHALL be a **pure event loop**. It does not know about
+    RPC, services, connections, or transport.
 -   Connection setup (UDS socket creation, shared memory allocation,
     handshake) is handled by the **generated service layer**:
     -   Server side: `Service::Create()` creates the endpoint.
     -   Client side: `client.connect()` connects to the endpoint.
--   The EventDispatcher only runs the dispatch loop, multiplexes
-    across connected peers, and routes frames to handlers.
--   The server/client distinction exists only at the **generated service
-    layer** (who registers RPC handlers vs who calls them).
+-   The RunLoop only runs the event loop and executes posted callables.
+-   Higher-level classes (Service, Client) post their work to the
+    RunLoop via `runOnThread()`.
 
 ### 3.6 Multi-Client Architecture
 
@@ -111,7 +110,7 @@ Rationale:
     -   Each connection has its own shared memory region with its own
         pair of ring buffers.
     -   No shared state exists between connections.
--   The server-side EventDispatcher SHALL manage multiple connections
+-   The server-side Service class SHALL manage multiple connections
     internally, using `epoll`/`kqueue` to multiplex across all client
     UDS file descriptors.
 -   A misbehaving or crashing client SHALL only affect its own
@@ -122,36 +121,33 @@ Rationale:
 
 ------------------------------------------------------------------------
 
-# 4. EventDispatcher Specification
+# 4. RunLoop Specification
 
 ## 4.1 Responsibilities
 
-The EventDispatcher SHALL:
+The RunLoop SHALL:
 
-1.  Provide a generic event loop on a dedicated dispatch thread.
-2.  Allow other components to post work to the dispatch thread.
+1.  Provide a generic event loop on a dedicated thread.
+2.  Allow other components to post work to that thread.
 3.  Provide deterministic stop semantics.
 
-The EventDispatcher does NOT:
+The RunLoop does NOT:
 
 -   Know about RPC, notifications, services, or frame formats.
 -   Manage connections, sockets, or shared memory.
--   Directly expose `addFd`/`removeFd` — fd management is an
-    internal implementation detail used by higher-level classes
-    (e.g., Service, Client) that operate on the dispatcher.
 
 ------------------------------------------------------------------------
 
 ## 4.2 Public API (Required)
 
 ``` cpp
-class EventDispatcher
+class RunLoop
 {
 public:
     void init(const char* name);
     void run();
     void stop();
-    void runOnDispatchThread(std::function<void()> fn);
+    void runOnThread(std::function<void()> fn);
 };
 ```
 
@@ -159,17 +155,17 @@ public:
 
 -   `init(name)` SHALL initialize the event loop (create the epoll
     instance and internal wakeup mechanism). `name` identifies the
-    dispatcher for debugging/logging purposes.
--   `run()` SHALL block the calling thread, dispatching events
-    until `stop()` is invoked.
+    run loop for debugging/logging purposes.
+-   `run()` SHALL block the calling thread, executing posted
+    callables until `stop()` is invoked.
 -   `stop()` SHALL:
     -   Terminate the run loop
     -   Be thread-safe — callable from any thread or from within
         a posted callable
--   `runOnDispatchThread(fn)` SHALL:
-    -   Accept a callable and execute it on the dispatch thread
+-   `runOnThread(fn)` SHALL:
+    -   Accept a callable and execute it on the run loop thread
     -   Be thread-safe — callable from any thread
-    -   Wake the dispatch loop so the callable is processed promptly
+    -   Wake the run loop so the callable is processed promptly
 
 ### Error Codes
 
@@ -377,7 +373,7 @@ notification, and shutdown.
 
   -- Startup --
 
-  EventDispatcher dispatcher
+  RunLoop dispatcher
   MyStorageService impl
     ("StorageService",
      &dispatcher)
@@ -390,7 +386,7 @@ notification, and shutdown.
   dispatcher.run()              |
     [blocks on epoll]           |
                                 |
-                                |                    EventDispatcher dispatcher
+                                |                    RunLoop dispatcher
                                 |                    MyStorageClient client
                                 |                      ("StorageService",
                                 |                       &dispatcher)
@@ -652,7 +648,7 @@ For each service `Foo`, the code generator SHALL produce:
 ``` cpp
 class FooSkeleton {
 public:
-    FooSkeleton(const char* serviceName, EventDispatcher* dispatcher);
+    FooSkeleton(const char* serviceName, RunLoop* dispatcher);
 
     // Generated — dispatches incoming request frames via switch/case
     // on methodId, unmarshals parameters, calls the virtual handler.
@@ -684,7 +680,7 @@ class MyStorageService : public StorageServiceSkeleton {
 };
 
 // Application code
-EventDispatcher dispatcher;
+RunLoop dispatcher;
 MyStorageService impl("StorageService", &dispatcher);
 Service::Create("StorageService", &impl);  // creates endpoint
 dispatcher.run();  // blocks
@@ -695,7 +691,7 @@ dispatcher.run();  // blocks
 ``` cpp
 class FooClient {
 public:
-    FooClient(const char* serviceName, EventDispatcher* dispatcher);
+    FooClient(const char* serviceName, RunLoop* dispatcher);
 
     void connect();  // blocks until server is available
 
@@ -724,7 +720,7 @@ class MyStorageClient : public StorageServiceClient {
 };
 
 // Application code
-EventDispatcher dispatcher;
+RunLoop dispatcher;
 MyStorageClient client("StorageService", &dispatcher);
 client.connect();  // blocks until server is available
 
@@ -798,11 +794,11 @@ Python SHALL wrap generated C++ classes.
 
 ## 11.1 Implementation Order
 
-The EventDispatcher runtime SHALL be implemented and tested first,
+The RunLoop runtime SHALL be implemented and tested first,
 before the IDL parser and code generator. All tests below use the
-EventDispatcher C++ API directly (no generated code).
+RunLoop C++ API directly (no generated code).
 
-## 11.2 EventDispatcher Unit Tests
+## 11.2 RunLoop Unit Tests
 
 ### Ring Buffer Tests
 
@@ -861,7 +857,7 @@ EventDispatcher C++ API directly (no generated code).
     in flight, pending calls complete with `RPC_ERR_STOPPED`.
 22. **stop from signal handler** — `stop()` invoked from signal
     context (or simulated), dispatcher shuts down cleanly.
-23. **Multiple services** — single EventDispatcher serves multiple
+23. **Multiple services** — single RunLoop serves multiple
     service skeletons on different serviceIds.
 
 ### Crash / Error Handling Tests

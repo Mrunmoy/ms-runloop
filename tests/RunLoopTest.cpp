@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "rpc/EventDispatcher.h"
+#include "rpc/RunLoop.h"
 
 #include <atomic>
 #include <chrono>
@@ -8,16 +8,16 @@
 using namespace rpc;
 using namespace std::chrono_literals;
 
-// Helper: run dispatcher in background, auto-stop on scope exit.
-struct DispatcherGuard {
-    EventDispatcher& dispatcher;
+// Helper: run loop in background, auto-stop on scope exit.
+struct RunLoopGuard {
+    RunLoop& loop;
     std::thread thread;
 
-    explicit DispatcherGuard(EventDispatcher& d)
-        : dispatcher(d), thread([&d] { d.run(); }) {}
+    explicit RunLoopGuard(RunLoop& l)
+        : loop(l), thread([&l] { l.run(); }) {}
 
-    ~DispatcherGuard() {
-        dispatcher.stop();
+    ~RunLoopGuard() {
+        loop.stop();
         if (thread.joinable()) thread.join();
     }
 };
@@ -26,24 +26,24 @@ struct DispatcherGuard {
 // init() sets the name.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, InitSetsName) {
-    EventDispatcher dispatcher;
-    dispatcher.init("TestDispatcher");
-    EXPECT_STREQ(dispatcher.name(), "TestDispatcher");
+TEST(RunLoopTest, InitSetsName) {
+    RunLoop loop;
+    loop.init("TestLoop");
+    EXPECT_STREQ(loop.name(), "TestLoop");
 }
 
 // ═════════════════════════════════════════════════════════════════════
 // run() blocks, stop() causes it to return.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, RunStop) {
-    EventDispatcher dispatcher;
-    dispatcher.init("RunStop");
+TEST(RunLoopTest, RunStop) {
+    RunLoop loop;
+    loop.init("RunStop");
 
     std::atomic<bool> running{false};
     std::thread t([&] {
         running.store(true);
-        dispatcher.run();
+        loop.run();
         running.store(false);
     });
 
@@ -51,27 +51,27 @@ TEST(EventDispatcherTest, RunStop) {
         std::this_thread::sleep_for(5ms);
     }
     EXPECT_TRUE(running.load());
-    EXPECT_TRUE(dispatcher.isRunning());
+    EXPECT_TRUE(loop.isRunning());
 
-    dispatcher.stop();
+    loop.stop();
     t.join();
 
     EXPECT_FALSE(running.load());
-    EXPECT_FALSE(dispatcher.isRunning());
+    EXPECT_FALSE(loop.isRunning());
 }
 
 // ═════════════════════════════════════════════════════════════════════
 // stop() before run() — run() should return immediately.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, StopBeforeRun) {
-    EventDispatcher dispatcher;
-    dispatcher.init("StopBefore");
-    dispatcher.stop();
+TEST(RunLoopTest, StopBeforeRun) {
+    RunLoop loop;
+    loop.init("StopBefore");
+    loop.stop();
 
     std::atomic<bool> done{false};
     std::thread t([&] {
-        dispatcher.run();
+        loop.run();
         done.store(true);
     });
 
@@ -86,20 +86,20 @@ TEST(EventDispatcherTest, StopBeforeRun) {
 // stop() from within a posted callable.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, StopFromCallable) {
-    EventDispatcher dispatcher;
-    dispatcher.init("StopCallable");
+TEST(RunLoopTest, StopFromCallable) {
+    RunLoop loop;
+    loop.init("StopCallable");
 
     std::atomic<bool> done{false};
     std::thread t([&] {
-        dispatcher.run();
+        loop.run();
         done.store(true);
     });
 
     std::this_thread::sleep_for(10ms);
 
-    dispatcher.runOnDispatchThread([&] {
-        dispatcher.stop();
+    loop.runOnThread([&] {
+        loop.stop();
     });
 
     for (int i = 0; i < 100 && !done.load(); ++i) {
@@ -110,76 +110,76 @@ TEST(EventDispatcherTest, StopFromCallable) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// Destructor stops a running dispatcher.
+// Destructor stops a running loop.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, DestructorStops) {
+TEST(RunLoopTest, DestructorStops) {
     std::atomic<bool> done{false};
     {
-        EventDispatcher dispatcher;
-        dispatcher.init("DtorStop");
+        RunLoop loop;
+        loop.init("DtorStop");
         std::thread t([&] {
-            dispatcher.run();
+            loop.run();
             done.store(true);
         });
         std::this_thread::sleep_for(10ms);
-        dispatcher.stop();
+        loop.stop();
         t.join();
     }
     EXPECT_TRUE(done.load());
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// runOnDispatchThread() executes callable on the dispatch thread.
+// runOnThread() executes callable on the loop thread.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, RunOnDispatchThread) {
-    EventDispatcher dispatcher;
-    dispatcher.init("PostThread");
+TEST(RunLoopTest, RunOnThread) {
+    RunLoop loop;
+    loop.init("PostThread");
 
-    std::thread::id dispatchThreadId;
+    std::thread::id loopThreadId;
     std::thread::id postedThreadId;
     std::atomic<bool> done{false};
 
     std::thread t([&] {
-        dispatchThreadId = std::this_thread::get_id();
-        dispatcher.run();
+        loopThreadId = std::this_thread::get_id();
+        loop.run();
     });
 
     std::this_thread::sleep_for(10ms);
 
-    dispatcher.runOnDispatchThread([&] {
+    loop.runOnThread([&] {
         postedThreadId = std::this_thread::get_id();
         done.store(true);
-        dispatcher.stop();
+        loop.stop();
     });
 
     t.join();
 
     EXPECT_TRUE(done.load());
-    EXPECT_EQ(postedThreadId, dispatchThreadId);
+    EXPECT_EQ(postedThreadId, loopThreadId);
 }
 
 // ═════════════════════════════════════════════════════════════════════
 // Multiple posts from different threads all execute.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, MultiplePostsFromThreads) {
-    EventDispatcher dispatcher;
-    dispatcher.init("MultiPost");
+TEST(RunLoopTest, MultiplePostsFromThreads) {
+    RunLoop loop;
+    loop.init("MultiPost");
 
     std::atomic<int> count{0};
     constexpr int NUM_THREADS = 4;
     constexpr int POSTS_PER_THREAD = 25;
 
-    DispatcherGuard guard(dispatcher);
+    RunLoopGuard guard(loop);
     std::this_thread::sleep_for(10ms);
 
     std::vector<std::thread> threads;
     for (int t = 0; t < NUM_THREADS; ++t) {
         threads.emplace_back([&] {
             for (int i = 0; i < POSTS_PER_THREAD; ++i) {
-                dispatcher.runOnDispatchThread([&] {
+                loop.runOnThread([&] {
                     count.fetch_add(1);
                 });
             }
@@ -199,20 +199,20 @@ TEST(EventDispatcherTest, MultiplePostsFromThreads) {
 // Posted callables execute in order.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, PostOrder) {
-    EventDispatcher dispatcher;
-    dispatcher.init("PostOrder");
+TEST(RunLoopTest, PostOrder) {
+    RunLoop loop;
+    loop.init("PostOrder");
 
     std::vector<int> order;
     std::mutex mu;
     std::atomic<int> count{0};
 
-    DispatcherGuard guard(dispatcher);
+    RunLoopGuard guard(loop);
     std::this_thread::sleep_for(10ms);
 
     constexpr int N = 50;
     for (int i = 0; i < N; ++i) {
-        dispatcher.runOnDispatchThread([&, i] {
+        loop.runOnThread([&, i] {
             std::lock_guard<std::mutex> lock(mu);
             order.push_back(i);
             count.fetch_add(1);
@@ -234,25 +234,25 @@ TEST(EventDispatcherTest, PostOrder) {
 // run() can be called again after stop().
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(EventDispatcherTest, RestartAfterStop) {
-    EventDispatcher dispatcher;
-    dispatcher.init("Restart");
+TEST(RunLoopTest, RestartAfterStop) {
+    RunLoop loop;
+    loop.init("Restart");
 
     // First run/stop cycle
     {
-        DispatcherGuard guard(dispatcher);
+        RunLoopGuard guard(loop);
         std::this_thread::sleep_for(10ms);
     }
 
     // Second run/stop cycle
     std::atomic<bool> executed{false};
     {
-        std::thread t([&] { dispatcher.run(); });
+        std::thread t([&] { loop.run(); });
         std::this_thread::sleep_for(10ms);
 
-        dispatcher.runOnDispatchThread([&] {
+        loop.runOnThread([&] {
             executed.store(true);
-            dispatcher.stop();
+            loop.stop();
         });
 
         t.join();
