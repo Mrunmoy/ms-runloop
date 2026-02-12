@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 
@@ -26,11 +27,25 @@ def test():
     run(["ctest", "--output-on-failure"], cwd=BUILD_DIR)
 
 
+def clean():
+    if os.path.isdir(BUILD_DIR):
+        shutil.rmtree(BUILD_DIR)
+        print(f">>> Removed {BUILD_DIR}")
+    else:
+        print(">>> Nothing to clean")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build the RPC project")
     parser.add_argument("-t", "--test", action="store_true",
                         help="Build and run tests")
+    parser.add_argument("-c", "--clean", action="store_true",
+                        help="Remove build directory")
     args = parser.parse_args()
+
+    if args.clean:
+        clean()
+        return
 
     build()
 
